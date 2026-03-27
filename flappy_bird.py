@@ -1,230 +1,139 @@
 import streamlit as st
-import streamlit.components.v1 as components
+import numpy as np
+import time
 
-st.set_page_config(page_title="Q-Learning Flappy Bird", page_icon="🐦", layout="wide")
+st.set_page_config(page_title="GridWorld RL", layout="centered")
 
-st.markdown("# 🐦 Q-Learning Flappy Bird")
-st.caption("Reinforcement Learning • Real-time Training")
+# ---------- UI STYLE ----------
+st.markdown("""
+<style>
+.stApp { background-color: #0a0f1a; color: #e0e6f0; }
+h1 { color: #f9c74f; }
+.block-container { padding-top: 2rem; }
+.metric-box {
+    background: #0d1525;
+    border: 1px solid #1a2540;
+    padding: 10px;
+    border-radius: 10px;
+    text-align: center;
+}
+</style>
+""", unsafe_allow_html=True)
 
+st.title("🧠 GridWorld Q-Learning")
+
+# ---------- SIDEBAR ----------
 with st.sidebar:
     st.markdown("### ⚙️ Controls")
 
+    episodes = st.slider("Episodes", 100, 5000, 1000)
     alpha = st.slider("Learning rate (α)", 0.01, 1.0, 0.1)
     gamma = st.slider("Discount (γ)", 0.1, 0.99, 0.9)
-    epsilon = st.slider("Exploration (ε)", 0.0, 1.0, 0.1)
+    epsilon = st.slider("Exploration (ε)", 0.01, 1.0, 0.2)
 
     st.markdown("---")
+    speed = st.slider("⚡ Training Speed", 1, 50, 10)
 
-    sim_speed = st.slider("⚡ Training Speed", 1, 20, 5)
+# ---------- GRID ----------
+n = 5
+goal = (4,4)
+trap = (3,3)
 
-    st.markdown("---")
-    st.markdown("**Controls**")
-    st.markdown("• Adjust speed to train faster\n• Lower ε over time")
+actions = ["↑","↓","←","→"]
 
-game_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-<style>
-body {{
-    margin:0;
-    background:#0a0f1a;
-    font-family: Arial;
-}}
+if "Q" not in st.session_state:
+    st.session_state.Q = np.zeros((n,n,4))
+    st.session_state.episode = 0
+    st.session_state.running = False
 
-#wrap {{
-    display:flex;
-    gap:10px;
-    padding:10px;
-}}
+Q = st.session_state.Q
 
-canvas {{
-    border-radius:10px;
-    border:1px solid #1a2540;
-}}
+def step(state, action):
+    x,y = state
 
-#panel {{
-    width:160px;
-    color:#ccc;
-    font-size:12px;
-}}
+    if action == 0: x -= 1
+    if action == 1: x += 1
+    if action == 2: y -= 1
+    if action == 3: y += 1
 
-.card {{
-    background:#0d1525;
-    border:1px solid #1a2540;
-    border-radius:8px;
-    padding:8px;
-    margin-bottom:8px;
-    text-align:center;
-}}
+    x = max(0, min(n-1, x))
+    y = max(0, min(n-1, y))
 
-.val {{
-    font-size:20px;
-    color:#f9c74f;
-}}
+    if (x,y) == goal:
+        return (x,y), 10, True
+    if (x,y) == trap:
+        return (x,y), -10, True
 
-button {{
-    width:100%;
-    padding:6px;
-    background:#111;
-    border:1px solid #333;
-    color:#ccc;
-    cursor:pointer;
-}}
+    return (x,y), -0.1, False
 
-button:hover {{
-    border-color:#f9c74f;
-    color:#f9c74f;
-}}
-</style>
-</head>
 
-<body>
-<div id="wrap">
-    <canvas id="game" width="400" height="500"></canvas>
+# ---------- BUTTONS ----------
+col1, col2 = st.columns(2)
 
-    <div id="panel">
-        <div class="card">
-            Score
-            <div class="val" id="score">0</div>
-        </div>
+if col1.button("▶ Start Training"):
+    st.session_state.running = True
 
-        <div class="card">
-            Episodes
-            <div class="val" id="episodes">0</div>
-        </div>
+if col2.button("⏸ Pause"):
+    st.session_state.running = False
 
-        <div class="card">
-            Alive
-            <div class="val" id="status">RUN</div>
-        </div>
+# ---------- METRICS ----------
+m1, m2 = st.columns(2)
+m1.metric("Episode", st.session_state.episode)
+m2.metric("Status", "RUNNING" if st.session_state.running else "PAUSED")
 
-        <button onclick="togglePause()">Pause / Resume</button>
-    </div>
-</div>
+# ---------- GRID DISPLAY ----------
+grid_placeholder = st.empty()
 
-<script>
-const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
+def draw_grid():
+    grid = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            if (i,j)==goal:
+                row.append("🏁")
+            elif (i,j)==trap:
+                row.append("💀")
+            else:
+                a = np.argmax(Q[i,j])
+                row.append(actions[a])
+        grid.append(" ".join(row))
+    return grid
 
-const W=400, H=500;
+# ---------- TRAIN LOOP ----------
+if st.session_state.running:
+    for _ in range(speed):  # SPEED CONTROL
+        if st.session_state.episode >= episodes:
+            st.session_state.running = False
+            break
 
-let bird = {{y:250, vy:0}};
-let pipe = {{x:400, gapY:200}};
-let score = 0;
-let episodes = 0;
+        state = (0,0)
 
-let paused = false;
+        while True:
+            if np.random.rand() < epsilon:
+                action = np.random.randint(4)
+            else:
+                action = np.argmax(Q[state[0],state[1]])
 
-// Q-table
-let Q = {{}};
+            new_state, reward, done = step(state, action)
 
-const alpha = {alpha};
-const gamma = {gamma};
-const epsilon = {epsilon};
-const SPEED = {sim_speed};
+            Q[state[0],state[1],action] += alpha * (
+                reward + gamma * np.max(Q[new_state[0],new_state[1]])
+                - Q[state[0],state[1],action]
+            )
 
-function getState() {{
-    let dy = Math.floor((bird.y - pipe.gapY)/20);
-    let dx = Math.floor((pipe.x - 80)/20);
-    let vy = Math.floor(bird.vy/2);
-    return `${{dy}}_${{dx}}_${{vy}}`;
-}}
+            state = new_state
 
-function chooseAction(s) {{
-    if (Math.random()<epsilon || !(s in Q)) {{
-        return Math.random()<0.5 ? 0 : 1;
-    }}
-    return Q[s][0] > Q[s][1] ? 0 : 1;
-}}
+            if done:
+                break
 
-function updateQ(s,a,r,s2) {{
-    if (!(s in Q)) Q[s]=[0,0];
-    if (!(s2 in Q)) Q[s2]=[0,0];
+        st.session_state.episode += 1
 
-    Q[s][a] += alpha*(r + gamma*Math.max(...Q[s2]) - Q[s][a]);
-}}
+# ---------- DRAW GRID ----------
+grid = draw_grid()
+for row in grid:
+    grid_placeholder.write(row)
 
-function reset() {{
-    bird.y=250;
-    bird.vy=0;
-    pipe.x=400;
-    pipe.gapY=150+Math.random()*200;
-    score=0;
-    episodes++;
-}}
-
-function step() {{
-    let s = getState();
-    let a = chooseAction(s);
-
-    if (a===1) bird.vy=-7;
-
-    bird.vy+=0.5;
-    bird.y+=bird.vy;
-
-    pipe.x-=2;
-
-    if (pipe.x<-50) {{
-        pipe.x=400;
-        pipe.gapY=150+Math.random()*200;
-        score++;
-    }}
-
-    let reward = 0.1;
-
-    if (bird.y<0 || bird.y>H ||
-        (pipe.x<100 && pipe.x>50 &&
-        (bird.y<pipe.gapY || bird.y>pipe.gapY+120))) {{
-
-        reward = -10;
-        updateQ(s,a,reward,getState());
-        reset();
-        return;
-    }}
-
-    updateQ(s,a,reward,getState());
-}}
-
-function draw() {{
-    ctx.fillStyle="#0a0f1a";
-    ctx.fillRect(0,0,W,H);
-
-    // bird
-    ctx.beginPath();
-    ctx.arc(80,bird.y,10,0,Math.PI*2);
-    ctx.fillStyle="#f9c74f";
-    ctx.fill();
-
-    // pipes
-    ctx.fillStyle="#2ecc71";
-    ctx.fillRect(pipe.x,0,50,pipe.gapY);
-    ctx.fillRect(pipe.x,pipe.gapY+120,50,H);
-
-    ctx.fillStyle="#fff";
-    ctx.fillText("Score: "+score,10,20);
-
-    document.getElementById("score").innerText = score;
-    document.getElementById("episodes").innerText = episodes;
-}}
-
-function togglePause() {{
-    paused = !paused;
-    document.getElementById("status").innerText = paused ? "PAUSE" : "RUN";
-}}
-
-function loop() {{
-    if (!paused) {{
-        for (let i=0;i<SPEED;i++) step();
-    }}
-    draw();
-    requestAnimationFrame(loop);
-}}
-
-loop();
-</script>
-</body>
-</html>
-"""
-
-components.html(game_html, height=520)
+# ---------- AUTO REFRESH ----------
+if st.session_state.running:
+    time.sleep(0.05)
+    st.rerun()
