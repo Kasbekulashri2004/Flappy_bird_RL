@@ -1,282 +1,168 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Flappy Bird RL", layout="centered")
+st.set_page_config(page_title="RL Flappy Bird", page_icon="🐦", layout="wide")
 
-# Sidebar controls
-st.sidebar.title("Controls")
-paused = st.sidebar.checkbox("Pause Training", value=False)
-training_speed = st.sidebar.slider("Training Speed (steps per frame)", 1, 100, 10)
-
-# Display info
-st.markdown("## Flappy Bird Q-Learning Training")
+# --- Minimal Clean UI Styling ---
 st.markdown("""
-- The yellow circle is the bird.
-- Green vertical bars are pipes.
-- Score increments as pipes are passed.
-- Use controls to pause/resume and adjust training speed.
-""")
+<style>
+html, body, [class*="css"] {
+    font-family: system-ui, sans-serif;
+}
+.stApp {
+    background: #0a0f1a;
+}
+h1 {
+    color: #f9c74f !important;
+    font-size: 1.6rem !important;
+}
+section[data-testid="stSidebar"] {
+    background: #060b14 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# Prepare the HTML and JS for the game
+st.markdown("# 🐦 RL Flappy Bird")
+
+# --- Sidebar Controls ---
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
+    pop_size = st.slider("Population", 10, 200, 50, 10)
+    sim_speed = st.slider("Speed", 1, 20, 5, 1)
+    mut_rate = st.slider("Mutation (%)", 1, 50, 10, 1)
+
+# --- Game HTML ---
 game_html = f"""
 <!DOCTYPE html>
 <html>
-<head>
-<style>
-  body {{
-    margin: 0; padding: 0; background: #0a0f1a; font-family: 'Space Mono', monospace;
-    color: #f9c74f;
-    user-select: none;
-  }}
-  #gameCanvas {{
-    display: block;
-    margin: 0 auto;
-    background: #0a0f1a;
-    border: 2px solid #f9c74f;
-    border-radius: 8px;
-  }}
-  #infoPanel {{
-    text-align: center;
-    margin-top: 10px;
-    font-size: 18px;
-  }}
-</style>
-</head>
-<body>
-<canvas id="gameCanvas" width="400" height="600"></canvas>
-<div id="infoPanel">
-  Generation: <span id="gen">1</span> |
-  Best Score: <span id="bestScore">0</span> |
-  Alive: <span id="alive">1</span> |
-  Current Score: <span id="score">0</span>
-</div>
+<body style="margin:0;background:#0a0f1a;">
+<canvas id="gc" width="400" height="500"></canvas>
 
 <script>
-(() => {{
-  const canvas = document.getElementById('gameCanvas');
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width;
-  const H = canvas.height;
+const POP_SIZE = {pop_size};
+const SIM_SPEED = {sim_speed};
+const MUT_RATE = {mut_rate/100};
 
-  // Q-learning parameters and environment constants
-  const statesY = 10;  // Discretize bird y position
-  const statesVY = 10; // Discretize bird velocity
-  const PIPE_GAP = 140;
-  const PIPE_WIDTH = 50;
-  const PIPE_SPEED = 3;
-  const BIRD_RADIUS = 12;
+const canvas = document.getElementById('gc');
+const ctx = canvas.getContext('2d');
+const W=400, H=500;
 
-  let Q = {{}};
+function rand() {{ return Math.random()*2-1; }}
 
-  let generation = 1;
-  let bestScore = 0;
-
-  // From Streamlit Python controls
-  let paused = {str(paused).lower()};
-  let trainingSpeed = {training_speed};
-
-  // Bird class
-  class Bird {{
-    constructor() {{
-      this.x = 100;
-      this.y = H / 2;
-      this.vy = 0;
-      this.alive = true;
-      this.score = 0;
-    }}
-    flap() {{
-      this.vy = -8;
-    }}
-    update() {{
-      this.vy += 0.5;
-      this.y += this.vy;
-      if (this.y < BIRD_RADIUS) {{
-        this.y = BIRD_RADIUS;
-        this.vy = 0;
-      }}
-      if (this.y > H - BIRD_RADIUS - 80) {{
-        this.alive = false;
-      }}
-    }}
+class Net {{
+  constructor(w) {{
+    this.w = w ? [...w] : Array.from({{length:24}}, rand);
   }}
-
-  // Pipe class
-  class Pipe {{
-    constructor() {{
-      this.x = W;
-      this.gapY = 100 + Math.random() * (H - 280);
-      this.passed = false;
+  forward(i) {{
+    let h=[0,0,0,0];
+    for(let j=0;j<4;j++){{
+      for(let k=0;k<5;k++) h[j]+=i[k]*this.w[j*5+k];
+      h[j]=Math.tanh(h[j]);
     }}
-    update() {{
-      this.x -= PIPE_SPEED;
-    }}
-    offscreen() {{
-      return this.x < -PIPE_WIDTH;
-    }}
+    let o=0;
+    for(let j=0;j<4;j++) o+=h[j]*this.w[20+j];
+    return Math.tanh(o);
   }}
-
-  // Discretize state for Q table key
-  function getState(bird, pipe) {{
-    const yState = Math.min(statesY - 1, Math.floor(bird.y / (H / statesY)));
-    const vyState = Math.min(statesVY - 1, Math.floor((bird.vy + 15) / 30 * statesVY));
-    const pipeDist = Math.min(9, Math.floor((pipe.x - bird.x) / 40));
-    const gapY = Math.min(statesY - 1, Math.floor(pipe.gapY / (H / statesY)));
-    return `${{yState}},${{vyState}},${{pipeDist}},${{gapY}}`;
+  mutate(r) {{
+    return new Net(this.w.map(v=>Math.random()<r ? v+(Math.random()*2-1)*0.3 : v));
   }}
+}}
 
-  // Epsilon-greedy action selection
-  function chooseAction(state, epsilon) {{
-    if (!Q[state]) {{
-      Q[state] = [0, 0];
-    }}
-    if (Math.random() < epsilon) {{
-      return Math.floor(Math.random() * 2);
-    }}
-    return Q[state][0] > Q[state][1] ? 0 : 1;
+function bird(net) {{
+  return {{x:80,y:H/2,vy:0,alive:true,fitness:0,net:net||new Net()}};
+}}
+
+let birds=[], pipes=[], frame=0;
+
+function pipe() {{
+  let top = 80 + Math.random()*(H-200);
+  pipes.push({{x:W, top, bot:top+140}});
+}}
+
+function init() {{
+  birds = Array.from({{length:POP_SIZE}},()=>bird());
+  pipes=[]; frame=0; pipe();
+}}
+
+function evolve() {{
+  birds.sort((a,b)=>b.fitness-a.fitness);
+  let best = birds[0];
+  let next=[bird(best.net)];
+  while(next.length<POP_SIZE){{
+    next.push(bird(best.net.mutate(MUT_RATE)));
   }}
+  birds=next; pipes=[]; frame=0; pipe();
+}}
 
-  // Q-learning update
-  function updateQ(state, action, reward, nextState, alpha, gamma) {{
-    if (!Q[nextState]) Q[nextState] = [0, 0];
-    const maxNext = Math.max(...Q[nextState]);
-    Q[state][action] += alpha * (reward + gamma * maxNext - Q[state][action]);
-  }}
+function step() {{
+  frame++;
+  if(frame%80===0) pipe();
 
-  let birds = [];
-  let pipes = [];
-  let frameCount = 0;
-  let score = 0;
-  let epsilon = 0.2;
-  let alpha = 0.7;
-  let gamma = 0.9;
+  pipes.forEach(p=>p.x-=2.5);
 
-  function reset() {{
-    birds = [];
-    pipes = [];
-    birds.push(new Bird());
-    pipes.push(new Pipe());
-    score = 0;
-  }}
+  for(let b of birds){{
+    if(!b.alive) continue;
 
-  reset();
+    let p=pipes[0];
+    let out=b.net.forward([
+      b.y/H,
+      b.vy/10,
+      (p.x-b.x)/W,
+      p.top/H,
+      p.bot/H
+    ]);
 
-  function gameStep() {{
-    if (paused) return;
+    if(out>0) b.vy=-6;
+    b.vy+=0.4;
+    b.y+=b.vy;
 
-    for (let i = 0; i < trainingSpeed; i++) {{
-      frameCount++;
+    b.fitness++;
 
-      if (frameCount % 90 === 0) {{
-        pipes.push(new Pipe());
-      }}
+    if(b.y<0||b.y>H) b.alive=false;
 
-      pipes.forEach(pipe => pipe.update());
-      if (pipes.length > 0 && pipes[0].offscreen()) {{
-        pipes.shift();
-      }}
-
-      const pipe = pipes.find(p => p.x + PIPE_WIDTH > birds[0].x) || pipes[0];
-
-      birds.forEach(bird => {{
-        if (!bird.alive) return;
-
-        const state = getState(bird, pipe);
-        const action = chooseAction(state, epsilon);
-        if (action === 1) bird.flap();
-
-        bird.update();
-
-        // Collision detection with pipes
-        if (bird.x + BIRD_RADIUS > pipe.x && bird.x - BIRD_RADIUS < pipe.x + PIPE_WIDTH) {{
-          if (bird.y - BIRD_RADIUS < pipe.gapY || bird.y + BIRD_RADIUS > pipe.gapY + PIPE_GAP) {{
-            bird.alive = false;
-          }}
-        }}
-
-        // Reward system
-        let reward = 0;
-        if (!bird.alive) reward = -100;
-        else if (pipe.x + PIPE_WIDTH < bird.x && !pipe.passed) {{
-          pipe.passed = true;
-          score++;
-          reward = 100;
-        }} else {{
-          reward = 1;
-        }}
-
-        const nextState = getState(bird, pipe);
-        updateQ(state, action, reward, nextState, alpha, gamma);
-      }});
-
-      if (!birds.some(b => b.alive)) {{
-        if (score > bestScore) bestScore = score;
-        generation++;
-        reset();
-      }}
+    if(b.x>p.x && b.x<p.x+50){{
+      if(b.y<p.top||b.y>p.bot) b.alive=false;
     }}
   }}
 
-  function draw() {{
-    ctx.clearRect(0, 0, W, H);
+  if(birds.every(b=>!b.alive)) evolve();
+}}
 
-    // Background
-    ctx.fillStyle = '#0a0f1a';
-    ctx.fillRect(0, 0, W, H);
+function draw() {{
+  ctx.fillStyle="#0a0f1a";
+  ctx.fillRect(0,0,W,H);
 
-    // Draw pipes
-    pipes.forEach(pipe => {{
-      ctx.fillStyle = '#1a5c2a';
-      ctx.fillRect(pipe.x, 0, PIPE_WIDTH, pipe.gapY);
-      ctx.fillRect(pipe.x, pipe.gapY + PIPE_GAP, PIPE_WIDTH, H - pipe.gapY - PIPE_GAP - 80);
-
-      ctx.fillStyle = '#1a7030';
-      ctx.fillRect(pipe.x - 5, pipe.gapY - 16, PIPE_WIDTH + 10, 16);
-      ctx.fillRect(pipe.x - 5, pipe.gapY + PIPE_GAP, PIPE_WIDTH + 10, 16);
-    }});
-
-    // Draw bird
-    birds.forEach(bird => {{
-      ctx.fillStyle = bird.alive ? '#f9c74f' : 'rgba(100, 100, 120, 0.15)';
-      ctx.beginPath();
-      ctx.arc(bird.x, bird.y, BIRD_RADIUS, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.strokeStyle = bird.alive ? '#ff9f00' : 'rgba(100,100,120,0.15)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }});
-
-    // Ground
-    ctx.fillStyle = '#0d2a1a';
-    ctx.fillRect(0, H - 80, W, 80);
-
-    // Score text
-    ctx.fillStyle = '#f9c74f';
-    ctx.font = 'bold 28px Space Mono';
-    ctx.textAlign = 'center';
-    ctx.fillText('Score: ' + score, W / 2, 50);
-
-    ctx.font = '14px Space Mono';
-    ctx.fillText('Gen: ' + generation, 60, H - 40);
+  // pipes
+  ctx.fillStyle="#2a8c3a";
+  for(let p of pipes){{
+    ctx.fillRect(p.x,0,50,p.top);
+    ctx.fillRect(p.x,p.bot,50,H-p.bot);
   }}
 
-  function loop() {{
-    gameStep();
-    draw();
-
-    document.getElementById('gen').textContent = generation;
-    document.getElementById('bestScore').textContent = bestScore;
-    document.getElementById('alive').textContent = birds.filter(b => b.alive).length;
-    document.getElementById('score').textContent = score;
-
-    requestAnimationFrame(loop);
+  // birds
+  ctx.fillStyle="#f9c74f";
+  for(let b of birds){{
+    if(b.alive) ctx.fillRect(b.x,b.y,8,8);
   }}
+}}
 
-  loop();
+function loop(){{
+  for(let i=0;i<SIM_SPEED;i++) step();
+  draw();
+  requestAnimationFrame(loop);
+}}
 
-}})();
+init();
+loop();
 </script>
 </body>
 </html>
 """
 
-# Embed the game HTML in Streamlit with scrolling disabled and full height
-st.components.v1.html(game_html, height=650, scrolling=False)
+components.html(game_html, height=520)
+
+# --- Bottom Metrics ---
+c1, c2, c3 = st.columns(3)
+c1.metric("Population", pop_size)
+c2.metric("Speed", f"{sim_speed}x")
+c3.metric("Mutation", f"{mut_rate}%")
