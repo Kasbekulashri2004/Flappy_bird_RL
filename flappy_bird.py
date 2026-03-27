@@ -2,37 +2,17 @@ import streamlit as st
 import numpy as np
 import time
 
-st.set_page_config(page_title="GridWorld RL", layout="centered")
+st.set_page_config(page_title="GridWorld Live Training", layout="centered")
 
-# ---------- UI STYLE ----------
-st.markdown("""
-<style>
-.stApp { background-color: #0a0f1a; color: #e0e6f0; }
-h1 { color: #f9c74f; }
-.block-container { padding-top: 2rem; }
-.metric-box {
-    background: #0d1525;
-    border: 1px solid #1a2540;
-    padding: 10px;
-    border-radius: 10px;
-    text-align: center;
-}
-</style>
-""", unsafe_allow_html=True)
+st.title("🧠 GridWorld Q-Learning (Live Training)")
 
-st.title("🧠 GridWorld Q-Learning")
-
-# ---------- SIDEBAR ----------
+# ---------- CONTROLS ----------
 with st.sidebar:
     st.markdown("### ⚙️ Controls")
-
-    episodes = st.slider("Episodes", 100, 5000, 1000)
-    alpha = st.slider("Learning rate (α)", 0.01, 1.0, 0.1)
-    gamma = st.slider("Discount (γ)", 0.1, 0.99, 0.9)
-    epsilon = st.slider("Exploration (ε)", 0.01, 1.0, 0.2)
-
-    st.markdown("---")
-    speed = st.slider("⚡ Training Speed", 1, 50, 10)
+    alpha = st.slider("Learning rate", 0.01, 1.0, 0.1)
+    gamma = st.slider("Discount", 0.1, 0.99, 0.9)
+    epsilon = st.slider("Exploration", 0.01, 1.0, 0.2)
+    speed = st.slider("⚡ Speed", 1, 20, 5)
 
 # ---------- GRID ----------
 n = 5
@@ -41,13 +21,16 @@ trap = (3,3)
 
 actions = ["↑","↓","←","→"]
 
+# ---------- STATE ----------
 if "Q" not in st.session_state:
     st.session_state.Q = np.zeros((n,n,4))
-    st.session_state.episode = 0
     st.session_state.running = False
+    st.session_state.state = (0,0)
+    st.session_state.episode = 0
 
 Q = st.session_state.Q
 
+# ---------- STEP FUNCTION ----------
 def step(state, action):
     x,y = state
 
@@ -66,30 +49,28 @@ def step(state, action):
 
     return (x,y), -0.1, False
 
-
 # ---------- BUTTONS ----------
 col1, col2 = st.columns(2)
 
-if col1.button("▶ Start Training"):
+if col1.button("▶ Start"):
     st.session_state.running = True
 
 if col2.button("⏸ Pause"):
     st.session_state.running = False
 
-# ---------- METRICS ----------
-m1, m2 = st.columns(2)
-m1.metric("Episode", st.session_state.episode)
-m2.metric("Status", "RUNNING" if st.session_state.running else "PAUSED")
+st.metric("Episode", st.session_state.episode)
 
-# ---------- GRID DISPLAY ----------
+# ---------- GRID DRAW ----------
 grid_placeholder = st.empty()
 
-def draw_grid():
+def draw_grid(agent_pos):
     grid = []
     for i in range(n):
         row = []
         for j in range(n):
-            if (i,j)==goal:
+            if (i,j)==agent_pos:
+                row.append("🟡")  # agent
+            elif (i,j)==goal:
                 row.append("🏁")
             elif (i,j)==trap:
                 row.append("💀")
@@ -99,41 +80,41 @@ def draw_grid():
         grid.append(" ".join(row))
     return grid
 
-# ---------- TRAIN LOOP ----------
+# ---------- TRAINING STEP ----------
 if st.session_state.running:
-    for _ in range(speed):  # SPEED CONTROL
-        if st.session_state.episode >= episodes:
-            st.session_state.running = False
+    for _ in range(speed):
+
+        state = st.session_state.state
+
+        # choose action
+        if np.random.rand() < epsilon:
+            action = np.random.randint(4)
+        else:
+            action = np.argmax(Q[state[0],state[1]])
+
+        new_state, reward, done = step(state, action)
+
+        # Q update
+        Q[state[0],state[1],action] += alpha * (
+            reward + gamma * np.max(Q[new_state[0],new_state[1]])
+            - Q[state[0],state[1],action]
+        )
+
+        st.session_state.state = new_state
+
+        # reset if done
+        if done:
+            st.session_state.state = (0,0)
+            st.session_state.episode += 1
             break
 
-        state = (0,0)
+# ---------- DISPLAY ----------
+grid = draw_grid(st.session_state.state)
 
-        while True:
-            if np.random.rand() < epsilon:
-                action = np.random.randint(4)
-            else:
-                action = np.argmax(Q[state[0],state[1]])
-
-            new_state, reward, done = step(state, action)
-
-            Q[state[0],state[1],action] += alpha * (
-                reward + gamma * np.max(Q[new_state[0],new_state[1]])
-                - Q[state[0],state[1],action]
-            )
-
-            state = new_state
-
-            if done:
-                break
-
-        st.session_state.episode += 1
-
-# ---------- DRAW GRID ----------
-grid = draw_grid()
 for row in grid:
     grid_placeholder.write(row)
 
 # ---------- AUTO REFRESH ----------
 if st.session_state.running:
-    time.sleep(0.05)
+    time.sleep(0.1)
     st.rerun()
