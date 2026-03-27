@@ -20,6 +20,7 @@ html, body, [class*="css"] {
 .main .block-container {
     padding: 1.5rem 2rem 2rem 2rem;
     max-width: 1200px;
+    
 }
 h1 {
     font-family: 'Space Mono', monospace !important;
@@ -82,13 +83,6 @@ Each bird has a tiny neural net:
 - **1 output**: jump or hold
 
 After all birds die, the top 5 survivors breed the next generation via weight mutation.
-    """)
-    st.markdown("---")
-    st.markdown("**Tips**")
-    st.markdown("""
-- Crank speed to **10–20x** to skip early chaos
-- Lower mutation after gen 10 to **exploit**
-- Bigger populations find solutions faster
     """)
 
 game_html = f"""
